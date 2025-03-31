@@ -102,6 +102,10 @@ jobs:
         id: current-time
         run: echo "TIME=$(TZ='Europe/Paris' date +'%d/%m/%Y at %H:%M')" >> $GITHUB_OUTPUT
 
+      - name: Get short SHA
+        id: short-sha
+        run: echo "SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
       - name: Notify Slack
         if: always()
         uses: slackapi/slack-github-action@v1.25.0
@@ -155,6 +159,7 @@ jobs:
                   "text": {
                     "type": "mrkdwn",
                     "text": "*`SHA`*          ${{ github.sha }}"
+                    "text": "*`SHA`*          <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ steps.short-sha.outputs.SHORT_SHA }}`>"
                   }
                 },
                 {
