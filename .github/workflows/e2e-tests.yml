@@ -2,9 +2,9 @@ name: E2E Tests
 
 on:
   schedule:
-    - cron: "0 9 * * 1-5"
+    - cron: "*/5 * * * 1-5"
   pull_request:
-    branches: [main]
+    branches: [main, dev, master]
   push:
     branches: "**"
 
@@ -45,15 +45,51 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 
+      - name: Record start time
+        id: start-time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: Run Playwright tests
-        run: pnpm exec playwright test
+        id: run-tests
+        continue-on-error: true
+        run: |
+          pnpm exec playwright test
+          echo "TEST_STATUS=$?" >> $GITHUB_OUTPUT
         env:
           CI: true
           NODE_ENV: test
           VITE_CLIENT_URL: http://localhost:5173
 
+      - name: Extract test results
+        id: test-results
+        if: always()
+        run: |
+          if [ -f "playwright-report/index.html" ]; then
+            PASSED=$(grep -o "passed" playwright-report/index.html | wc -l || echo "0")
+            FAILED=$(grep -o "failed" playwright-report/index.html | wc -l || echo "0")
+            SKIPPED=$(grep -o "skipped" playwright-report/index.html | wc -l || echo "0")
+            echo "PASSED=$PASSED" >> $GITHUB_OUTPUT
+            echo "FAILED=$FAILED" >> $GITHUB_OUTPUT
+            echo "SKIPPED=$SKIPPED" >> $GITHUB_OUTPUT
+          else
+            echo "PASSED=0" >> $GITHUB_OUTPUT
+            echo "FAILED=0" >> $GITHUB_OUTPUT
+            echo "SKIPPED=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Calculate duration
+        id: duration
+        if: always()
+        run: |
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - ${{ steps.start-time.outputs.START_TIME }}))
+          MINUTES=$((DURATION / 60))
+          SECONDS=$((DURATION % 60))
+          echo "DURATION=${MINUTES}m ${SECONDS}s" >> $GITHUB_OUTPUT
+
       - name: Upload test results
         if: always()
+        id: upload-artifact
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
@@ -61,3 +97,106 @@ jobs:
             playwright-report/
             test-results/
           retention-days: 7
+
+      - name: Get current time (Europe/Paris)
+        id: current-time
+        run: echo "TIME=$(TZ='Europe/Paris' date +'%d/%m/%Y at %H:%M')" >> $GITHUB_OUTPUT
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ github.event_name == 'schedule' && 'Scheduled E2E Tests' || github.event_name == 'pull_request' && 'PR E2E Tests' || 'Push E2E Tests' }} ${{ steps.run-tests.outputs.TEST_STATUS == '0' && 'Passed' || 'Failed' }}",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "text": "Executed on *${{ steps.current-time.outputs.TIME }}* / Duration: *${{ steps.duration.outputs.DURATION }}*",
+                      "type": "mrkdwn"
+                    }
+                  ]
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Details*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`Project`*   ${{ github.repository }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`Branch`*     ${{ github.ref_name }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`SHA`*          ${{ github.sha }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`Action`*     ${{ github.event_name == 'schedule' && 'Scheduled run' || github.event_name == 'pull_request' && 'Pull Request' || 'Push' }}"
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Results *"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`Summary`*    ${{ steps.run-tests.outputs.TEST_STATUS == '0' && 'Success' || 'Failure' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*`Details`*    ${{ steps.test-results.outputs.PASSED }} passed - ${{ steps.test-results.outputs.FAILED }} failed - ${{ steps.test-results.outputs.SKIPPED }} skipped"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "By clicking <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|*here*>, you will be able to view the *workflow run* and *download* the *test report*"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.TESTS_SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
