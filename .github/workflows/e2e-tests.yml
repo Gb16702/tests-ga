@@ -2,11 +2,11 @@ name: E2E Tests
 
 on:
   schedule:
-    - cron: "*/5 * * * 1-5"
+    - cron: "30 8 * * 1-5"
   pull_request:
     branches: [main, dev, master]
   push:
-    branches: "**"
+    branches: ["**"]
 
 jobs:
   e2e-tests:
@@ -49,11 +49,11 @@ jobs:
         id: start-time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_OUTPUT
 
-      - name: Run Playwright tests
+      - name: Run Playwright tests with XML report
         id: run-tests
         continue-on-error: true
         run: |
-          pnpm exec playwright test
+          pnpm exec playwright test --config=playwright.config.ts
           echo "TEST_STATUS=$?" >> $GITHUB_OUTPUT
         env:
           CI: true
@@ -64,18 +64,33 @@ jobs:
         id: test-results
         if: always()
         run: |
-          if [ -f "playwright-report/index.html" ]; then
-            PASSED=$(grep -o "passed" playwright-report/index.html | wc -l || echo "0")
-            FAILED=$(grep -o "failed" playwright-report/index.html | wc -l || echo "0")
-            SKIPPED=$(grep -o "skipped" playwright-report/index.html | wc -l || echo "0")
-            echo "PASSED=$PASSED" >> $GITHUB_OUTPUT
-            echo "FAILED=$FAILED" >> $GITHUB_OUTPUT
-            echo "SKIPPED=$SKIPPED" >> $GITHUB_OUTPUT
+          XML_FILE=$(find . -name "test-results.xml" -o -name "junit*.xml" | head -1)
+          if [ -n "$XML_FILE" ]; then
+            echo "Found XML file: $XML_FILE"
+            TRIMMED_XML=$(tr -d '\n\r' < "$XML_FILE")
+
+            TESTS=$(echo "$TRIMMED_XML"    | sed -n 's/.*<testsuites[^>]*tests="\([0-9]\+\)".*/\1/p')
+            FAILURES=$(echo "$TRIMMED_XML" | sed -n 's/.*<testsuites[^>]*failures="\([0-9]\+\)".*/\1/p')
+            ERRORS=$(echo "$TRIMMED_XML"   | sed -n 's/.*<testsuites[^>]*errors="\([0-9]\+\)".*/\1/p')
+            SKIPPED=$(echo "$TRIMMED_XML"  | sed -n 's/.*<testsuites[^>]*skipped="\([0-9]\+\)".*/\1/p')
+
+            TESTS=${TESTS:-0}
+            FAILURES=${FAILURES:-0}
+            ERRORS=${ERRORS:-0}
+            SKIPPED=${SKIPPED:-0}
+
+            PASSED=$(( TESTS - FAILURES - ERRORS ))
+            echo "Parsed results: $PASSED passed, $((FAILURES + ERRORS)) failed, $SKIPPED skipped"
           else
-            echo "PASSED=0" >> $GITHUB_OUTPUT
-            echo "FAILED=0" >> $GITHUB_OUTPUT
-            echo "SKIPPED=0" >> $GITHUB_OUTPUT
+            echo "No XML results found, defaulting to 0"
+            PASSED=0
+            FAILURES=0
+            SKIPPED=0
           fi
+
+          echo "PASSED=$PASSED" >> $GITHUB_OUTPUT
+          echo "FAILED=$FAILURES" >> $GITHUB_OUTPUT
+          echo "SKIPPED=$SKIPPED" >> $GITHUB_OUTPUT
 
       - name: Calculate duration
         id: duration
@@ -117,7 +132,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ github.event_name == 'schedule' && 'Scheduled E2E Tests' || github.event_name == 'pull_request' && 'PR E2E Tests' || 'Push E2E Tests' }} ${{ steps.run-tests.outputs.TEST_STATUS == '0' && 'Passed' || 'Failed' }}",
+                    "text": "E2E Tests Results",
                     "emoji": true
                   }
                 },
@@ -125,7 +140,7 @@ jobs:
                   "type": "context",
                   "elements": [
                     {
-                      "text": "Executed on *${{ steps.current-time.outputs.TIME }}* / Duration: *${{ steps.duration.outputs.DURATION }}*",
+                      "text": "*Launched* ${{ steps.current-time.outputs.TIME }} / *Completed in* ${{ steps.duration.outputs.DURATION }}",
                       "type": "mrkdwn"
                     }
                   ]
@@ -144,7 +159,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*`Project`*   ${{ github.repository }}"
+                    "text": "*`Project`*   <${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}>"
                   }
                 },
                 {
@@ -158,15 +173,14 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*`SHA`*          ${{ github.sha }}"
-                    "text": "*`SHA`*          <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ steps.short-sha.outputs.SHORT_SHA }}`>"
+                    "text": "*`Action`*     ${{ github.event_name == 'schedule' && 'Scheduled run' || github.event_name == 'pull_request' && 'Pull Request' || 'Push' }}"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*`Action`*     ${{ github.event_name == 'schedule' && 'Scheduled run' || github.event_name == 'pull_request' && 'Pull Request' || 'Push' }}"
+                    "text": "*`SHA`*          <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.short-sha.outputs.SHORT_SHA }}>"
                   }
                 },
                 {
@@ -183,14 +197,14 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*`Summary`*    ${{ steps.run-tests.outputs.TEST_STATUS == '0' && 'Success' || 'Failure' }}"
+                    "text": "*`Status`*     ${{ steps.run-tests.outputs.TEST_STATUS == '0' && 'Success' || 'Failure' }}"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*`Details`*    ${{ steps.test-results.outputs.PASSED }} passed - ${{ steps.test-results.outputs.FAILED }} failed - ${{ steps.test-results.outputs.SKIPPED }} skipped"
+                    "text": "*`Tests`*       ${{ steps.test-results.outputs.PASSED }} passed - ${{ steps.test-results.outputs.FAILED }} failed - ${{ steps.test-results.outputs.SKIPPED }} skipped"
                   }
                 },
                 {
